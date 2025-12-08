@@ -70,24 +70,39 @@ async function run() {
       res.send(result);
     });
 
+    app.get('/users', verifyJWT, async (req, res) => {
+      const result = await usersCollection.find().toArray();
+      res.send(result);
+    })
+
+    app.patch('/users/my-profile/:email', verifyJWT, async (req, res) => {
+      const { email } = req.params
+      const { name, photoURL } = req.body;
+      const updateInfo = {
+        $set: {
+          name: name,
+          photo: photoURL
+        }
+      }
+      const result = await usersCollection.updateOne({ email: email }, updateInfo);
+      res.send(result)
+    })
+
+    app.patch('/update-user/:id', verifyJWT, async (req, res) => {
+      const { id } = req.params;
+      const role = req.body.role;
+      const filter = {_id: new ObjectId(id)}
+      const result = await usersCollection.updateOne(filter, {$set: {role: role}})
+      res.send(result)
+    })
+
     app.get('/users/:email', verifyJWT, async (req, res) => {
       const { email } = req.params;
       const result = await usersCollection.findOne({email})
       res.send(result)
     })
 
-    app.patch('/users/:email', verifyJWT, async (req, res) => {
-      const { email } = req.params
-      const { name, photo } = req.body;
-      const updateInfo = {
-        $set: {
-          name,
-          photo
-        }
-      }
-      const result = await usersCollection.updateOne({ email: email }, updateInfo);
-      res.send(result)
-    })
+    
 
     // books collection apis
     app.post("/books", verifyJWT, async (req, res) => {
@@ -101,7 +116,7 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/books", verifyJWT, async (req, res) => {
+    app.get("/books", async (req, res) => {
       const search = req.query.search;
       const sort = req.query.sort;
 
@@ -149,16 +164,23 @@ async function run() {
       res.send(result);
     });
 
+    app.get('/orders/owner', verifyJWT, async (req, res) => {
+      const email = req.tokenEmail;
+      const result = await ordersCollection.find({ owner: email }).toArray();
+      res.send(result);
+    })
+
     app.get("/my-orders", verifyJWT, async (req, res) => {
       const email = req.tokenEmail;
       // console.log(email)
       const result = await ordersCollection
         .find({ userEmail: email })
+        .sort({createdAt: -1})
         .toArray();
       res.send(result);
     });
 
-    app.patch("/orders/cancel/:id", verifyJWT, async (req, res) => {
+    app.patch("/orders/cancel/:id", async (req, res) => {
       const { id } = req.params;
       const filter = { _id: new ObjectId(id), orderStatus: "pending" };
       const update = {
@@ -170,6 +192,19 @@ async function run() {
       const result = await ordersCollection.updateOne(filter, update);
       res.send(result);
     });
+
+    app.patch('/orders/status/:id', async (req, res) => {
+      const id = req.params.id;
+      const status = req.body.status;
+      const filter = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          orderStatus: status
+        }
+      };
+      const result = await ordersCollection.updateOne(filter, update);
+      res.send(result);
+    })
 
     // wishlist apis here
     app.post("/wishlist", async (req, res) => {
