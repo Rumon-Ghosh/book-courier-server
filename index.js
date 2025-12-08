@@ -4,6 +4,8 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
 const port = process.env.PORT || 3000;
+const stripe = require("stripe")(process.env.STIPE_SECRET_KEY);
+
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
@@ -30,12 +32,12 @@ app.use(express.json());
 // jwt middlewares
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
-  console.log(token);
+  // console.log(token);
   if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.tokenEmail = decoded.email;
-    console.log(decoded);
+    // console.log(decoded);
     next();
   } catch (err) {
     console.log(err);
@@ -58,8 +60,28 @@ async function run() {
     const booksCollection = database.collection("books");
     const ordersCollection = database.collection("orders");
     const wishlistCollection = database.collection("wishlist");
+    const invoiceCollection = database.collection("invoice");
+
+    const checkAdmin = async (req, res, next) => {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden! Admin only." });
+      }
+      next();
+    };
+
+    const checkLibrarian = async (req, res, next) => {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "librarian") {
+        return res.status(403).send({ message: "Forbidden! Librarian only." });
+      }
+      next();
+    };
 
     // users apis
+    // storing user data when a user get registered
     app.post("/users", async (req, res) => {
       const user = req.body;
       const isExists = await usersCollection.findOne({ email: user.email });
@@ -70,41 +92,56 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/users', verifyJWT, async (req, res) => {
+    // get all the users for admin user-management
+    app.get("/users", verifyJWT, checkAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
-    })
+    });
 
-    app.patch('/users/my-profile/:email', verifyJWT, async (req, res) => {
-      const { email } = req.params
+    // getting role of a user
+    app.get("/user/role", verifyJWT, async (req, res) => {
+      const email = req.tokenEmail;
+      const result = await usersCollection.findOne({ email: email });
+      res.send({ role: result?.role });
+    });
+
+    // updating user profile
+    app.patch("/users/my-profile/:email", verifyJWT, async (req, res) => {
+      const { email } = req.params;
       const { name, photoURL } = req.body;
       const updateInfo = {
         $set: {
           name: name,
-          photo: photoURL
-        }
-      }
-      const result = await usersCollection.updateOne({ email: email }, updateInfo);
-      res.send(result)
-    })
+          photo: photoURL,
+        },
+      };
+      const result = await usersCollection.updateOne(
+        { email: email },
+        updateInfo
+      );
+      res.send(result);
+    });
 
-    app.patch('/update-user/:id', verifyJWT, async (req, res) => {
+    // updating user role by admin
+    app.patch("/update-user/:id", verifyJWT, async (req, res) => {
       const { id } = req.params;
       const role = req.body.role;
-      const filter = {_id: new ObjectId(id)}
-      const result = await usersCollection.updateOne(filter, {$set: {role: role}})
-      res.send(result)
-    })
+      const filter = { _id: new ObjectId(id) };
+      const result = await usersCollection.updateOne(filter, {
+        $set: { role: role },
+      });
+      res.send(result);
+    });
 
-    app.get('/users/:email', verifyJWT, async (req, res) => {
+    // get a single user for profile page
+    app.get("/users/:email", verifyJWT, async (req, res) => {
       const { email } = req.params;
-      const result = await usersCollection.findOne({email})
-      res.send(result)
-    })
-
-    
+      const result = await usersCollection.findOne({ email });
+      res.send(result);
+    });
 
     // books collection apis
+    // saving the books in the database by a librarian
     app.post("/books", verifyJWT, async (req, res) => {
       const email = req.tokenEmail;
       const book = req.body;
@@ -116,6 +153,7 @@ async function run() {
       res.send(result);
     });
 
+    // get books with search and sort
     app.get("/books", async (req, res) => {
       const search = req.query.search;
       const sort = req.query.sort;
@@ -136,6 +174,55 @@ async function run() {
       res.send(result);
     });
 
+    // getting all-books for admin manage
+    app.get("/all-books", verifyJWT, checkAdmin, async (req, res) => {
+      const result = await booksCollection.find().toArray();
+      res.send(result);
+    });
+
+    // getting the books of a librarian
+    app.get("/my-books", verifyJWT, checkLibrarian, async (req, res) => {
+      const email = req.tokenEmail;
+      const filter = {};
+      if (email) {
+        filter.createdBy = email;
+      }
+      const result = await booksCollection.find(filter).toArray();
+      res.send(result);
+    });
+
+    // updating the status of a book by librarian and admin
+    app.patch("/books/update-status/:id", verifyJWT, async (req, res) => {
+      const { id } = req.params;
+      const filter = { _id: new ObjectId(id) };
+      const status = req.body.status;
+      const update = {
+        $set: {
+          status: status,
+        },
+      };
+      const result = await booksCollection.updateOne(filter, update);
+      res.send(result);
+    });
+
+    // update a book by book owner(librarian)
+    app.patch(
+      "/books/update/:id",
+      verifyJWT,
+      checkLibrarian,
+      async (req, res) => {
+        const id = req.params.id;
+        const updateData = req.body;
+
+        const result = await booksCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+        res.send(result);
+      }
+    );
+
+    // getting a single book details
     app.get("/books/:id", async (req, res) => {
       const { id } = req.params;
       const filter = { _id: new ObjectId(id) };
@@ -144,6 +231,7 @@ async function run() {
       res.send(result);
     });
 
+    // getting latest books to display in the home page
     app.get("/latest-books", async (req, res) => {
       const result = await booksCollection
         .find()
@@ -153,7 +241,26 @@ async function run() {
       res.send(result);
     });
 
+    // deleting a book and it's orders by admin
+    app.delete("/books/delete/:id", verifyJWT, checkAdmin, async (req, res) => {
+      const id = req.params.id;
+
+      const filter = { _id: new ObjectId(id) };
+
+      // Delete book
+      const deletedBook = await booksCollection.deleteOne(filter);
+
+      // Also delete orders containing this book
+      const deletedOrders = await ordersCollection.deleteMany({ bookId: id });
+
+      res.send({
+        deletedBooks: deletedBook.deletedCount,
+        deletedOrders: deletedOrders.deletedCount,
+      });
+    });
+
     // orders collections APIs
+    // storing a order from a user
     app.post("/orders", async (req, res) => {
       const orders = req.body;
       orders.orderStatus = "pending";
@@ -164,47 +271,50 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/orders/owner', verifyJWT, async (req, res) => {
+    // getting books published by a librarian
+    app.get("/orders/owner", verifyJWT, checkLibrarian, async (req, res) => {
       const email = req.tokenEmail;
       const result = await ordersCollection.find({ owner: email }).toArray();
       res.send(result);
-    })
+    });
 
+    // getting users order
     app.get("/my-orders", verifyJWT, async (req, res) => {
       const email = req.tokenEmail;
       // console.log(email)
       const result = await ordersCollection
         .find({ userEmail: email })
-        .sort({createdAt: -1})
+        .sort({ createdAt: -1 })
         .toArray();
       res.send(result);
     });
 
-    app.patch("/orders/cancel/:id", async (req, res) => {
+    //  cancelling a order by a librarian
+    app.patch("/orders/cancel/:id", verifyJWT, async (req, res) => {
       const { id } = req.params;
       const filter = { _id: new ObjectId(id), orderStatus: "pending" };
       const update = {
         $set: {
           orderStatus: "cancelled",
-          cancelledAt: new Date().toISOString(),
         },
       };
       const result = await ordersCollection.updateOne(filter, update);
       res.send(result);
     });
 
-    app.patch('/orders/status/:id', async (req, res) => {
+    // change the deliveryStatus by a librarian
+    app.patch("/orders/status/:id", async (req, res) => {
       const id = req.params.id;
       const status = req.body.status;
       const filter = { _id: new ObjectId(id) };
       const update = {
         $set: {
-          orderStatus: status
-        }
+          orderStatus: status,
+        },
       };
       const result = await ordersCollection.updateOne(filter, update);
       res.send(result);
-    })
+    });
 
     // wishlist apis here
     app.post("/wishlist", async (req, res) => {
@@ -222,12 +332,81 @@ async function run() {
       res.send(result);
     });
 
+    // getting the wishlist by a user
     app.get("/my-wishlist/:email", verifyJWT, async (req, res) => {
       const { email } = req.params;
       const filter = { userEmail: email };
       const result = await wishlistCollection.find(filter).toArray();
-      res.send(result)
+      res.send(result);
     });
+
+    // payment related APIs
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      console.log(paymentInfo)
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              unit_amount: paymentInfo?.price * 100,
+              product_data: {
+                name: paymentInfo?.bookName,
+                images: [paymentInfo?.image]
+              }
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo?.userEmail,
+        mode: "payment",
+        metadata: {
+          orderId: paymentInfo?.orderId,
+          bookId: paymentInfo?.bookId,
+          userName: paymentInfo?.userName
+        },
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+      res.send({url: session.url})
+    });
+
+    app.post('/payment-success', verifyJWT, async (req, res) => {
+      const { sessionId } = req.body;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      // console.log(session)
+      const paymentResult = {
+        bookName: session?. display_name,
+        buyerEmail: session?.customer_email,
+        buyerName: session?.metadata?.userName,
+        transactionId: session?.payment_intent,
+        bookId: session?.metadata?.bookId,
+        orderId: session?.metadata?.orderId,
+        price: session.amount_total / 100,
+        paidAt: new Date().toISOString()
+      }
+
+      const alreadyPaid = await invoiceCollection.findOne({transactionId: session?.payment_intent})
+
+      // saving data in invoice
+      if (!alreadyPaid) {
+        const result = await invoiceCollection.insertOne(paymentResult)
+      }
+      
+      const query = {_id: new ObjectId(paymentResult.orderId)}
+
+      const updateOrder = {
+        $set: {
+          transactionId: paymentResult.transactionId,
+          paymentStatus: 'paid'
+        }
+      }
+
+      // update order
+      const updatedResult = await ordersCollection.updateOne(query, updateOrder)
+      res.send(updateOrder)
+
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
