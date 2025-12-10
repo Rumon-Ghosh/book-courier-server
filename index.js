@@ -142,7 +142,7 @@ async function run() {
     });
 
     // books collection apis
-    // saving the books in the database by a librarian
+    // saving the books in the database by a librarian.
     app.post("/books", verifyJWT, checkLibrarian, async (req, res) => {
       const email = req.tokenEmail;
       const book = req.body;
