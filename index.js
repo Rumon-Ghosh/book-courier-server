@@ -61,6 +61,7 @@ async function run() {
     const ordersCollection = database.collection("orders");
     const wishlistCollection = database.collection("wishlist");
     const invoiceCollection = database.collection("invoice");
+    const reviewCollection = database.collection("reviews");
 
     const checkAdmin = async (req, res, next) => {
       const email = req.tokenEmail;
@@ -142,7 +143,7 @@ async function run() {
 
     // books collection apis
     // saving the books in the database by a librarian
-    app.post("/books", verifyJWT, async (req, res) => {
+    app.post("/books", verifyJWT, checkLibrarian, async (req, res) => {
       const email = req.tokenEmail;
       const book = req.body;
       if (email) {
@@ -321,6 +322,14 @@ async function run() {
       const wishedBook = req.body;
       // console.log(wishedBook)
 
+      // delete wishlist
+      app.delete('/wishlist/:id', async (req, res) => {
+        const { id } = req.params;
+        const filter = { _id: new ObjectId(id) };
+        const result = await wishlistCollection.deleteOne(filter);
+        res.send(result);
+      })
+
       const alreadyWished = await wishlistCollection.findOne({
         userEmail: wishedBook.userEmail,
         bookId: wishedBook.bookId,
@@ -343,7 +352,7 @@ async function run() {
     // payment related APIs
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
-      console.log(paymentInfo)
+      // console.log(paymentInfo)
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -363,7 +372,8 @@ async function run() {
         metadata: {
           orderId: paymentInfo?.orderId,
           bookId: paymentInfo?.bookId,
-          userName: paymentInfo?.userName
+          userName: paymentInfo?.userName,
+          bookName: paymentInfo?.bookName
         },
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
@@ -371,12 +381,13 @@ async function run() {
       res.send({url: session.url})
     });
 
+    // retrieve payment info, update order and make invoice
     app.post('/payment-success', verifyJWT, async (req, res) => {
       const { sessionId } = req.body;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       // console.log(session)
       const paymentResult = {
-        bookName: session?. display_name,
+        bookName: session?.metadata?.bookName,
         buyerEmail: session?.customer_email,
         buyerName: session?.metadata?.userName,
         transactionId: session?.payment_intent,
@@ -404,8 +415,38 @@ async function run() {
 
       // update order
       const updatedResult = await ordersCollection.updateOne(query, updateOrder)
-      res.send(updateOrder)
+      res.send(updatedResult)
+    })
 
+    // get all invoices of a user
+    app.get('/my-invoice', verifyJWT, async (req, res) => {
+      const email = req.tokenEmail;
+      const query = {};
+      if (email) {
+        query.buyerEmail = email;
+      }
+      const result = await invoiceCollection.find(query).toArray()
+      res.send(result)
+    })
+
+    // reviews related apis here
+    // review save in the database
+    app.post('/book-review', verifyJWT, async (req, res) => {
+      const review = req.body;
+      const reviewData = {
+        ...review,
+        reviewedAt: new Date().toISOString()
+      }
+      const result = await reviewCollection.insertOne(reviewData);
+      res.send(result)
+    })
+
+    //get recent 5 reviews of a book from database
+    app.get('/book-review/:id', async (req, res) => {
+      const { id } = req.params;
+      const filter = { bookId: id };
+      const result = await reviewCollection.find(filter).sort({reviewedAt: -1}).limit(5).toArray();
+      res.send(result);
     })
 
     // Send a ping to confirm a successful connection
