@@ -175,7 +175,7 @@ async function run() {
       res.send(result);
     });
 
-    // getting all-books for admin manage
+    // getting all-books for admin manage-books
     app.get("/all-books", verifyJWT, checkAdmin, async (req, res) => {
       const result = await booksCollection.find().toArray();
       res.send(result);
