@@ -21,7 +21,7 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://localhost:5174",
-      "https://b12-m11-session.web.app",
+      process.env.SITE_DOMAIN,
     ],
     credentials: true,
     optionSuccessStatus: 200,
@@ -29,7 +29,7 @@ app.use(
 );
 app.use(express.json());
 
-// jwt middlewares
+// jwt middleware
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
   // console.log(token);
@@ -65,6 +65,7 @@ async function run() {
 
     const checkAdmin = async (req, res, next) => {
       const email = req.tokenEmail;
+      if (!email) return res.status(401).send({ message: "Unauthorized" });
       const user = await usersCollection.findOne({ email });
       if (user?.role !== "admin") {
         return res.status(403).send({ message: "Forbidden! Admin only." });
@@ -74,6 +75,7 @@ async function run() {
 
     const checkLibrarian = async (req, res, next) => {
       const email = req.tokenEmail;
+      if (!email) return res.status(401).send({ message: "Unauthorized" });
       const user = await usersCollection.findOne({ email });
       if (user?.role !== "librarian") {
         return res.status(403).send({ message: "Forbidden! Librarian only." });
@@ -95,7 +97,10 @@ async function run() {
 
     // get all the users for admin user-management
     app.get("/users", verifyJWT, checkAdmin, async (req, res) => {
-      const result = await usersCollection.find().toArray();
+      const email = req.tokenEmail;
+      const result = await usersCollection
+        .find({ email: { $ne: email } })
+        .toArray();
       res.send(result);
     });
 
@@ -124,7 +129,7 @@ async function run() {
     });
 
     // updating user role by admin
-    app.patch("/update-user/:id", verifyJWT, async (req, res) => {
+    app.patch("/update-user/:id", verifyJWT, checkAdmin, async (req, res) => {
       const { id } = req.params;
       const role = req.body.role;
       const filter = { _id: new ObjectId(id) };
@@ -148,7 +153,7 @@ async function run() {
       const book = req.body;
       if (email) {
         book.createdBy = email;
-        book.createdAt = new Date().toISOString();
+        book.createdAt = new Date();
       }
       const result = await booksCollection.insertOne(book);
       res.send(result);
@@ -156,23 +161,36 @@ async function run() {
 
     // get books with search and sort
     app.get("/books", async (req, res) => {
-      const search = req.query.search;
-      const sort = req.query.sort;
-
+      const search = req.query.search || "";
+      const sort = req.query.sort || "";
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
       let filter = {
         status: "published",
         bookName: { $regex: search, $options: "i" },
       };
 
-      let sortOption = {};
+      let sortOption = {createdAt: -1};
 
-      if (sort === "low-to-high") sortOption = { price: 1 };
-      if (sort === "high-to-low") sortOption = { price: -1 };
-      const result = await booksCollection
+      if (sort === "low-to-high") sortOption = { price: 1, createdAt: -1 };
+      if (sort === "high-to-low") sortOption = { price: -1, createdAt: -1 };
+
+      const totalBooks = await booksCollection.countDocuments(filter);
+
+      const totalPages = Math.ceil(totalBooks / limit);
+
+      const books = await booksCollection
         .find(filter)
         .sort(sortOption)
+        .skip(skip)
+        .limit(limit)
         .toArray();
-      res.send(result);
+
+      res.send({
+        books,
+        totalPages,
+      });
     });
 
     // getting all-books for admin manage-books
@@ -207,11 +225,7 @@ async function run() {
     });
 
     // update a book by book owner(librarian)
-    app.patch(
-      "/books/update/:id",
-      verifyJWT,
-      checkLibrarian,
-      async (req, res) => {
+    app.patch("/books/update/:id", verifyJWT, checkLibrarian, async (req, res) => {
         const id = req.params.id;
         const updateData = req.body;
 
@@ -254,19 +268,16 @@ async function run() {
       // Also delete orders containing this book
       const deletedOrders = await ordersCollection.deleteMany({ bookId: id });
 
-      res.send({
-        deletedBooks: deletedBook.deletedCount,
-        deletedOrders: deletedOrders.deletedCount,
-      });
+      res.send(deletedBook);
     });
 
     // orders collections APIs
     // storing a order from a user
-    app.post("/orders", async (req, res) => {
+    app.post("/orders", verifyJWT, async (req, res) => {
       const orders = req.body;
       orders.orderStatus = "pending";
       orders.paymentStatus = "unpaid";
-      orders.createdAt = new Date().toISOString();
+      orders.createdAt = new Date();
       orders.transactionId = null;
       const result = await ordersCollection.insertOne(orders);
       res.send(result);
@@ -304,7 +315,7 @@ async function run() {
     });
 
     // change the deliveryStatus by a librarian
-    app.patch("/orders/status/:id", async (req, res) => {
+    app.patch("/orders/status/:id", verifyJWT, checkLibrarian, async (req, res) => {
       const id = req.params.id;
       const status = req.body.status;
       const filter = { _id: new ObjectId(id) };
@@ -317,18 +328,32 @@ async function run() {
       res.send(result);
     });
 
+    // GET /orders-stats
+    app.get("/orders-stats", verifyJWT, async (req, res) => {
+      try {
+        const stats = await ordersCollection
+          .aggregate([
+            {
+              $group: {
+                _id: { $month: "$createdAt" },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+        // console.log(stats)
+        res.send(stats);
+      } catch (error) {
+        console.error("Error generating order stats:", error);
+        res.status(500).send({ error: "Failed to load order stats" });
+      }
+    });
+
     // wishlist apis here
-    app.post("/wishlist", async (req, res) => {
+    app.post("/wishlist", verifyJWT, async (req, res) => {
       const wishedBook = req.body;
       // console.log(wishedBook)
-
-      // delete wishlist
-      app.delete('/wishlist/:id', async (req, res) => {
-        const { id } = req.params;
-        const filter = { _id: new ObjectId(id) };
-        const result = await wishlistCollection.deleteOne(filter);
-        res.send(result);
-      })
 
       const alreadyWished = await wishlistCollection.findOne({
         userEmail: wishedBook.userEmail,
@@ -341,6 +366,15 @@ async function run() {
       res.send(result);
     });
 
+    // delete wishlist
+      app.delete("/wishlist/:id", verifyJWT, async (req, res) => {
+        const { id } = req.params;
+        const filter = { _id: new ObjectId(id) };
+        const result = await wishlistCollection.deleteOne(filter);
+        res.send(result);
+      });
+
+
     // getting the wishlist by a user
     app.get("/my-wishlist/:email", verifyJWT, async (req, res) => {
       const { email } = req.params;
@@ -350,19 +384,19 @@ async function run() {
     });
 
     // payment related APIs
-    app.post("/create-checkout-session", async (req, res) => {
+    app.post("/create-checkout-session", verifyJWT, async (req, res) => {
       const paymentInfo = req.body;
       // console.log(paymentInfo)
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: "usd",
               unit_amount: paymentInfo?.price * 100,
               product_data: {
                 name: paymentInfo?.bookName,
-                images: [paymentInfo?.image]
-              }
+                images: [paymentInfo?.image],
+              },
             },
             quantity: 1,
           },
@@ -373,16 +407,16 @@ async function run() {
           orderId: paymentInfo?.orderId,
           bookId: paymentInfo?.bookId,
           userName: paymentInfo?.userName,
-          bookName: paymentInfo?.bookName
+          bookName: paymentInfo?.bookName,
         },
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
-      res.send({url: session.url})
+      res.send({ url: session.url });
     });
 
     // retrieve payment info, update order and make invoice
-    app.post('/payment-success', verifyJWT, async (req, res) => {
+    app.post("/payment-success", verifyJWT, async (req, res) => {
       const { sessionId } = req.body;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       // console.log(session)
@@ -394,60 +428,69 @@ async function run() {
         bookId: session?.metadata?.bookId,
         orderId: session?.metadata?.orderId,
         price: session.amount_total / 100,
-        paidAt: new Date().toISOString()
-      }
+        paidAt: new Date(),
+      };
 
-      const alreadyPaid = await invoiceCollection.findOne({transactionId: session?.payment_intent})
+      const alreadyPaid = await invoiceCollection.findOne({
+        transactionId: session?.payment_intent,
+      });
 
       // saving data in invoice
       if (!alreadyPaid) {
-        const result = await invoiceCollection.insertOne(paymentResult)
+        const result = await invoiceCollection.insertOne(paymentResult);
       }
-      
-      const query = {_id: new ObjectId(paymentResult.orderId)}
+
+      const query = { _id: new ObjectId(paymentResult.orderId) };
 
       const updateOrder = {
         $set: {
           transactionId: paymentResult.transactionId,
-          paymentStatus: 'paid'
-        }
-      }
+          paymentStatus: "paid",
+        },
+      };
 
       // update order
-      const updatedResult = await ordersCollection.updateOne(query, updateOrder)
-      res.send(updatedResult)
-    })
+      const updatedResult = await ordersCollection.updateOne(
+        query,
+        updateOrder
+      );
+      res.send(updatedResult);
+    });
 
     // get all invoices of a user
-    app.get('/my-invoice', verifyJWT, async (req, res) => {
+    app.get("/my-invoice", verifyJWT, async (req, res) => {
       const email = req.tokenEmail;
       const query = {};
       if (email) {
         query.buyerEmail = email;
       }
-      const result = await invoiceCollection.find(query).toArray()
-      res.send(result)
-    })
+      const result = await invoiceCollection.find(query).toArray();
+      res.send(result);
+    });
 
     // reviews related apis here
     // review save in the database
-    app.post('/book-review', verifyJWT, async (req, res) => {
+    app.post("/book-review", verifyJWT, async (req, res) => {
       const review = req.body;
       const reviewData = {
         ...review,
-        reviewedAt: new Date().toISOString()
-      }
+        reviewedAt: new Date(),
+      };
       const result = await reviewCollection.insertOne(reviewData);
-      res.send(result)
-    })
+      res.send(result);
+    });
 
     //get recent 5 reviews of a book from database
-    app.get('/book-review/:id', async (req, res) => {
+    app.get("/book-review/:id", async (req, res) => {
       const { id } = req.params;
       const filter = { bookId: id };
-      const result = await reviewCollection.find(filter).sort({reviewedAt: -1}).limit(5).toArray();
+      const result = await reviewCollection
+        .find(filter)
+        .sort({ reviewedAt: -1 })
+        .limit(5)
+        .toArray();
       res.send(result);
-    })
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
