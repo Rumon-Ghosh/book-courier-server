@@ -286,8 +286,14 @@ async function run() {
     // getting books published by a librarian
     app.get("/orders/owner", verifyJWT, checkLibrarian, async (req, res) => {
       const email = req.tokenEmail;
-      const result = await ordersCollection.find({ owner: email }).toArray();
-      res.send(result);
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
+      const totalOrders = await ordersCollection.countDocuments({ owner: email });
+      const totalPages = Math.ceil(totalOrders / limit);
+      const result = await ordersCollection.find({ owner: email }).skip(skip).limit(limit).toArray();
+      // console.log({totalPages, page, limit, result})
+      res.send({result, totalPages});
     });
 
     // getting users order
@@ -493,7 +499,7 @@ async function run() {
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
