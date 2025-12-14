@@ -475,7 +475,7 @@ async function run() {
       res.send(result);
     });
 
-    // reviews related apis here
+    // reviews related APIs here
     // review save in the database
     app.post("/book-review", verifyJWT, async (req, res) => {
       const review = req.body;
