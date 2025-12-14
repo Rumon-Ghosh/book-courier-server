@@ -464,7 +464,7 @@ async function run() {
       res.send(updatedResult);
     });
 
-    // get all invoices of a user
+    // get all invoices of a user API
     app.get("/my-invoice", verifyJWT, async (req, res) => {
       const email = req.tokenEmail;
       const query = {};
