@@ -390,6 +390,7 @@ async function run() {
     });
 
     // payment related APIs
+    // sending to stripe checkout
     app.post("/create-checkout-session", verifyJWT, async (req, res) => {
       const paymentInfo = req.body;
       // console.log(paymentInfo)
