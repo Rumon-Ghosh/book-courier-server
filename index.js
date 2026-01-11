@@ -163,6 +163,7 @@ async function run() {
     app.get("/books", async (req, res) => {
       const search = req.query.search || "";
       const sort = req.query.sort || "";
+      const fil = req.query.filter || "";
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 10;
       const skip = (page - 1) * limit;
@@ -171,7 +172,11 @@ async function run() {
         bookName: { $regex: search, $options: "i" },
       };
 
-      let sortOption = {createdAt: -1};
+      let sortOption = { createdAt: -1 };
+      
+      if (fil && fil !== "All") {
+        filter.category = fil;
+      }
 
       if (sort === "low-to-high") sortOption = { price: 1, createdAt: -1 };
       if (sort === "high-to-low") sortOption = { price: -1, createdAt: -1 };
@@ -192,6 +197,34 @@ async function run() {
         totalPages,
       });
     });
+
+  // related books here
+  app.get("/related-books/:id", async (req, res) => {
+  const { id } = req.params;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid book id" });
+  }
+
+  const book = await booksCollection.findOne({ _id: new ObjectId(id) });
+
+  if (!book) {
+    return res.status(404).send({ message: "Book not found" });
+  }
+
+  const relatedBooks = await booksCollection
+    .find({
+      _id: { $ne: new ObjectId(id) }, 
+      category: book.category, 
+      status: "published",         
+    })
+    .sort({ createdAt: -1 })
+    .limit(4)
+    .toArray();
+
+  res.send(relatedBooks);
+});
+
 
     // getting all-books for admin manage-books
     app.get("/all-books", verifyJWT, checkAdmin, async (req, res) => {
@@ -251,7 +284,7 @@ async function run() {
       const result = await booksCollection
         .find()
         .sort({ createdAt: -1 })
-        .limit(6)
+        .limit(8)
         .toArray();
       res.send(result);
     });
